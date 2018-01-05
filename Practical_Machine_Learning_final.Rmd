@@ -1,0 +1,208 @@
+---
+title: "How well are you Lifting?: Using On-Body Sensor Readings to Classify Athletic Performance Quality"
+output: html_notebook
+---
+
+## Executive Summary
+
+In this examination, we look at a dataset describing five different fashions of performing dumbbell curls -- one correct and four incorrect -- as performed by six participants as measured by on-body sensors. The goal of this examination is to define a machine learning model that will correctly classify a given repetition of the Unilateral Dumbbell Biceps Curl at a high level of accuracy. The final chosen model is an ensemble composed of random forrest and support vector machine models.
+
+## Exploration and Model Building
+
+```{r}
+## Load needed libraries and retrieve sources up front
+
+suppressMessages(require(tidyverse))
+suppressMessages(require(caret))
+
+## Create a location for our data if not already available
+if(!dir.exists("./data")) {
+     dir.create("./data")
+}
+
+## Retrieve training and test sets
+trainfileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testfileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+## Download training set
+download.file(trainfileURL, destfile = "./data/pml-training.csv", method = "libcurl")
+
+## Download teting set
+download.file(testfileURL, destfile = "./data/pml-testing.csv", method = "libcurl")
+
+## Load data and clean up URLs
+training <- read.csv("./data/pml-training.csv")
+testing <- read.csv("./data/pml-testing.csv")
+rm("trainfileURL", "testfileURL")
+
+```
+
+After retrieving the datasets, a quick look at the first 40 variables of our training set shows a large amount of type misclassification. It also shows a number of variables with sizable amounts of missing values, both of which will be problematic for our analysis. 
+
+```{r}
+str(training[1:40])
+```
+
+
+To account for these issues, the training and test data will be imported again. This time, we will specify some values for na.strings and set stringsAsFactors to false. This will require factor variables to be specified in a separate step, but it also prevents empty values from forcing numeric or integer type variables to be interpreted as factor type variables. We will also exclude any variables consisting of more than 50% missing values to ensure data integrity.
+
+Despite performing cross-validation when training the models for this examination, we will segment the training set out into a new training and four holdout datasets to allow for additional model testing opportunities.
+
+
+```{r}
+training <- read.csv("./data/pml-training.csv", 
+                     na.strings = c("","NA","#DIV/0!"), 
+                     stringsAsFactors = FALSE)
+testing <- read.csv("./data/pml-testing.csv", 
+                    na.strings = c("","NA","#DIV/0!"), 
+                    stringsAsFactors = FALSE)
+
+badcols <- which(colMeans(is.na(training)) > 0.5)
+
+training <- training[,-badcols]
+training <- training %>%
+     mutate_at(c("classe","user_name","new_window"),
+               funs(factor(.)))
+testing <- testing[,-badcols]
+testing <- testing %>% 
+     mutate_at(c("user_name","new_window"),
+               funs(factor(.)))
+
+new_training <- training
+for(i in 1:4){
+     train_segment <- createDataPartition(new_training$classe, 
+                                          p = 0.8, list = FALSE)
+     varname <- paste0("holdout",i)
+     assign(varname, new_training[-train_segment,])
+     new_training <- new_training[train_segment,]
+}
+```
+
+## Model Training
+
+Now that the datasets have been imported with correct variable typing and bad data has been excluded, model training can begin. We will start by training four model types: linear discriminate analysis (LDA), random forest (RF), boosted (BM), and support vector machine (SVM) models. Principal component analysis will be used for data preprocessing.
+
+
+```{r, warning=FALSE}
+set.seed(1234)
+tc <- trainControl(method = "cv",
+                   number = 10,
+                   verboseIter = FALSE,
+                   preProcOptions = list(thresh = 0.85))
+
+## Fit first models
+modFitlda <- train(classe ~ ., method = "lda", 
+                  data = new_training[,-c(1:6)])
+modFitrf <- train(classe ~ ., method = "rf", 
+                  data = new_training[,-c(1:6)], 
+                  preProcess = "pca",
+                  trControl = tc)
+modFitbm <- train(classe ~ ., method = "gbm", 
+                  data = new_training[,-c(1:6)],
+                  preProcess = "pca",
+                  trControl = tc,
+                  verbose = FALSE)
+modFitsvm <- svm(classe ~ ., data = new_training[,-c(1:6)])
+
+```
+
+
+With our models trained, we can test their accuracy by predicting on the training set and comparing against the actual classification values.
+
+```{r}
+## Get predicted values for training set
+
+pred1 <- predict(modFitlda, new_training)
+pred2 <- predict(modFitrf, new_training)
+pred3 <- predict(modFitbm, new_training)
+pred4 <- predict(modFitsvm, new_training)
+
+## Check accuracy
+ldaCM = confusionMatrix(pred1,new_training$classe)
+rfCM = confusionMatrix(pred2,new_training$classe)
+bmCM = confusionMatrix(pred3,new_training$classe)
+svmCM = confusionMatrix(pred4,new_training$classe)
+
+print("LDA Results");ldaCM$table;ldaCM$overall[1]
+print("RF Results");rfCM$table;rfCM$overall[1]
+print("BM Results");bmCM$table;bmCM$overall[1]
+print("SVM Results");svmCM$table;svmCM$overall[1]
+
+```
+
+The LDA model fared worst at 72% accuracy and will be removed from consideration. The RF model is clearly overfit with an accuracy of 100% while the BM and SVM models at 84% and 93% respective accuracy look quite good.
+
+Let's see how well the remaining three models fare when tested against the first holdout set.
+
+```{r}
+## Get predicted values for training set
+
+pred1 <- predict(modFitrf, holdout1)
+pred2 <- predict(modFitbm, holdout1)
+pred3 <- predict(modFitsvm, holdout1)
+
+## Check accuracy
+rfCM = confusionMatrix(pred1,holdout1$classe)
+bmCM = confusionMatrix(pred2,holdout1$classe)
+svmCM = confusionMatrix(pred3,holdout1$classe)
+
+print("RF Results");rfCM$table;rfCM$overall[1]
+print("BM Results");bmCM$table;bmCM$overall[1]
+print("SVM Results");svmCM$table;svmCM$overall[1]
+```
+
+When tested against the first holdout set, the SVM model continues its strong performances with an accuracy rate of 92%. Despite being overfit, the RF model performs quite well on the holdout set with a 94% accuracy rate. The BM model, however, performs much worse on the holdout set than it did on the training set and will not be included in the final model.
+
+## Final Model Creation
+
+The final model will be a boosted model using the RF and SVM model predictions as additional data points. First, we add the predictions for each to the remaining holdout datasets, and then train our model on holdout set 2.
+
+```{r}
+## Add predicted probabilities from each of the remaining models
+## to holdouts 2 through 4
+
+holdout2 <- holdout2 %>% 
+     mutate(rf_PROB = predict(modFitrf, holdout2),
+            svm_PROB = predict(modFitsvm, holdout2))
+holdout3 <- holdout3 %>% 
+     mutate(rf_PROB = predict(modFitrf, holdout3),
+            svm_PROB = predict(modFitsvm, holdout3))
+holdout4 <- holdout4 %>% 
+     mutate(rf_PROB = predict(modFitrf, holdout4),
+            svm_PROB = predict(modFitsvm, holdout4))
+
+## Train final model on holdout2 data with predictions, using gbm
+
+final_model <- train(classe ~ ., method = "gbm", 
+                     data = holdout2[,-c(1:6)], trControl = tc, 
+                     verbose = FALSE)
+
+## Get combined model preditions on holdout2 data
+
+predFin <- predict(final_model, holdout2)
+
+## Check combined model accuracy
+
+CMfin = confusionMatrix(predFin,holdout2$classe)
+
+print("Final Model Results");CMfin$table;CMfin$overall[1]
+```
+
+The final model achieved 99.97% accuracy on the second holdout set. This is better than the RF (94.93%) or SVM (92.25%) models alone. All that remains is to see how well this model holds up to holdout sets 3 and 4.
+
+## Final Model Validation
+
+```{r}
+## Test how well our model performs with two sets of new data
+
+CMfin_h3 <- confusionMatrix(predict(final_model, holdout3),
+                            holdout3$classe)
+CMfin_h4 <- confusionMatrix(predict(final_model, holdout4),
+                            holdout4$classe)
+
+print("Final Model Results vs. holdout3");CMfin_h3$table;CMfin_h3$overall[1]
+print("Final Model Results vs. holdout4");CMfin_h4$table;CMfin_h4$overall[1]
+```
+
+With accuracy rates of 96.85% and 97.26% on the remaining holdout sets, our final ensemble model seems well suited to classifying how well a particular repetition of the Unilateral Dumbbell Biceps Curl was performed.
+
